@@ -2,6 +2,9 @@
 let pinnedEmails = new Set();
 let isProcessing = false;
 
+// 添加一个Map来存储邮件的原始位置
+let originalPositions = new Map();
+
 // 初始化插件
 async function initializePlugin() {
   try {
@@ -73,13 +76,26 @@ function waitForGmailToLoad() {
     isProcessing = true;
   
     try {
-      const emailRows = document.querySelectorAll('tr.zA');
+      const emailContainer = document.querySelector('table[role="grid"] tbody');
+      const emailRows = emailContainer.querySelectorAll('tr.zA');
+      
+      // 保存所有邮件的原始位置
+      emailRows.forEach((emailRow, index) => {
+        const emailId = getEmailId(emailRow);
+        if (!originalPositions.has(emailId)) {
+          originalPositions.set(emailId, {
+            index: index,
+            timestamp: getEmailTimestamp(emailRow)
+          });
+        }
+      });
+
+      // 处理置顶按钮和样式
       emailRows.forEach(emailRow => {
         if (!emailRow.querySelector('.pin-button')) {
           addPinButton(emailRow);
         }
         
-        // 确保置顶状态的样式正确
         const emailId = getEmailId(emailRow);
         if (pinnedEmails.has(emailId)) {
           emailRow.classList.add('pinned-email');
@@ -107,7 +123,7 @@ function waitForGmailToLoad() {
     const pinButton = document.createElement('button');
     pinButton.className = 'pin-button';
     pinButton.innerHTML = '📌';
-    pinButton.title = '置顶/取消置顶';
+    pinButton.title = 'Pin/Unpin';
     
     const emailId = getEmailId(emailRow);
     if (emailId && pinnedEmails.has(emailId)) {
@@ -120,9 +136,8 @@ function waitForGmailToLoad() {
     });
     
     // 查找邮件预览内容的单元格（通常是第三个或第四个单元格）
-    const subjectCell = emailRow.querySelector('td[role="gridcell"]:nth-child(6)') || 
-                       emailRow.querySelector('.a4W');
-                       
+    const subjectCell = emailRow.querySelector('td[role="gridcell"]:nth-child(6)');
+
     if (subjectCell) {
       // 在预览内容开头插入按钮
       const firstChild = subjectCell.firstChild;
@@ -180,15 +195,8 @@ function reorderPinnedEmails() {
 // 新增：获取邮件时间戳的函数
 function getEmailTimestamp(emailRow) {
   try {
-    // 1. 尝试从Gmail的数据属性中获取时间戳
-    for (const attr of ['data-timestamp', 'data-time']) {
-      const timestamp = emailRow.getAttribute(attr);
-      if (timestamp && !isNaN(parseInt(timestamp))) {
-        return parseInt(timestamp);
-      }
-    }
 
-    // 2. 遍历所有可能包含时间信息的元素
+    // 遍历所有可能包含时间信息的元素
     const timeElements = emailRow.querySelectorAll('td[role="gridcell"] *');
     for (const element of timeElements) {
       // 检查datetime属性
@@ -218,28 +226,6 @@ function getEmailTimestamp(emailRow) {
         }
       }
     }
-
-    // 3. 尝试从邮件的DOM结构中提取时间信息
-    const emailData = {
-      subject: emailRow.querySelector('td[role="gridcell"] span[email]')?.getAttribute('email'),
-      headers: emailRow.querySelector('td[role="gridcell"] div[data-legacy-last-message-id]')?.getAttribute('data-legacy-last-message-id'),
-      messageId: emailRow.getAttribute('data-legacy-message-id') || emailRow.getAttribute('data-message-id')
-    };
-
-    // 从邮件ID中提取时间信息（Gmail的邮件ID通常包含时间信息）
-    if (emailData.messageId) {
-      const idParts = emailData.messageId.split('-');
-      const possibleTimestamp = idParts[idParts.length - 1];
-      if (possibleTimestamp && !isNaN(parseInt(possibleTimestamp))) {
-        return parseInt(possibleTimestamp);
-      }
-    }
-
-    // 4. 如果上述方法都失败，使用邮件在列表中的原始位置作为排序依据
-    const allRows = Array.from(emailRow.parentElement.children);
-    const originalIndex = allRows.indexOf(emailRow);
-    // 使用一个足够大的数来确保顺序正确（越靠前的邮件时间戳越大）
-    return Date.now() - (originalIndex * 1000);
 
   } catch (error) {
     console.error('Error getting email timestamp:', error);
@@ -347,16 +333,21 @@ async function togglePin(emailRow) {
         pinnedEmails: Array.from(pinnedEmails)
       });
 
-      // 找到这封邮件应该在的位置并直接移动
-      const targetPosition = findEmailTargetPosition(emailRow);
-      const emailContainer = document.querySelector('table[role="grid"] tbody');
-      const allRows = Array.from(emailContainer.querySelectorAll('tr.zA'));
-      
-      // 直接移动到目标位置
-      if (targetPosition >= allRows.length) {
-        emailContainer.appendChild(emailRow);
-      } else {
-        emailContainer.insertBefore(emailRow, allRows[targetPosition]);
+      // 获取原始位置信息
+      const originalInfo = originalPositions.get(emailId);
+      if (originalInfo) {
+        const emailContainer = document.querySelector('table[role="grid"] tbody');
+        const allRows = Array.from(emailContainer.querySelectorAll('tr.zA'));
+        
+        // 找到正确的目标位置
+        let targetPosition = findTargetPosition(originalInfo.timestamp, allRows);
+        
+        // 移动到目标位置
+        if (targetPosition >= allRows.length) {
+          emailContainer.appendChild(emailRow);
+        } else {
+          emailContainer.insertBefore(emailRow, allRows[targetPosition]);
+        }
       }
       
       // 移除置顶样式
@@ -380,12 +371,8 @@ async function togglePin(emailRow) {
   }
 }
 
-// 找到邮件应该在的位置
-function findEmailTargetPosition(emailRow) {
-  const emailContainer = document.querySelector('table[role="grid"] tbody');
-  const allRows = Array.from(emailContainer.querySelectorAll('tr.zA'));
-  const emailTimestamp = getEmailTimestamp(emailRow);
-  
+// 新增：根据时间戳找到正确的目标位置
+function findTargetPosition(timestamp, allRows) {
   // 跳过置顶区域
   const firstNonPinnedIndex = allRows.findIndex(row => !pinnedEmails.has(getEmailId(row)));
   
@@ -394,7 +381,7 @@ function findEmailTargetPosition(emailRow) {
     const currentRow = allRows[i];
     const currentTimestamp = getEmailTimestamp(currentRow);
     
-    if (emailTimestamp > currentTimestamp) {
+    if (timestamp > currentTimestamp) {
       return i;
     }
   }
