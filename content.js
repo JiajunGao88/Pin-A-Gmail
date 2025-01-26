@@ -142,21 +142,195 @@ function reorderPinnedEmails() {
   const emailContainer = document.querySelector('table[role="grid"] tbody');
   if (!emailContainer) return;
 
-  // 获取所有邮件行
-  const allRows = Array.from(emailContainer.querySelectorAll('tr.zA'));
-  if (allRows.length === 0) return;
+  try {
+    // 获取所有邮件行
+    const allRows = Array.from(emailContainer.querySelectorAll('tr.zA'));
+    if (allRows.length === 0) return;
 
-  // 只处理置顶邮件的移动
-  const pinnedRows = allRows.filter(row => pinnedEmails.has(getEmailId(row)));
-  
-  // 将置顶邮件移动到顶部
-  pinnedRows.reverse().forEach(row => {
-    if (emailContainer.firstChild) {
-      emailContainer.insertBefore(row, emailContainer.firstChild);
-    } else {
-      emailContainer.appendChild(row);
+    // 创建一个Map来存储邮件行和它们的时间戳
+    const rowTimestamps = new Map();
+
+    // 预先计算所有置顶邮件的时间戳
+    const pinnedRows = allRows.filter(row => pinnedEmails.has(getEmailId(row)));
+    pinnedRows.forEach(row => {
+      rowTimestamps.set(row, getEmailTimestamp(row));
+    });
+
+    // 按时间戳排序
+    const sortedPinnedRows = pinnedRows.sort((a, b) => {
+      const timeA = rowTimestamps.get(a);
+      const timeB = rowTimestamps.get(b);
+      if (timeA === timeB) {
+        // 如果时间戳相同，保持原始顺序
+        return allRows.indexOf(a) - allRows.indexOf(b);
+      }
+      return timeB - timeA; // 降序排列
+    });
+
+    // 将排序后的置顶邮件移动到顶部
+    sortedPinnedRows.forEach((row, index) => {
+      emailContainer.insertBefore(row, emailContainer.children[index]);
+    });
+
+  } catch (error) {
+    console.error('Error reordering pinned emails:', error);
+  }
+}
+
+// 新增：获取邮件时间戳的函数
+function getEmailTimestamp(emailRow) {
+  try {
+    // 1. 尝试从Gmail的数据属性中获取时间戳
+    for (const attr of ['data-timestamp', 'data-time']) {
+      const timestamp = emailRow.getAttribute(attr);
+      if (timestamp && !isNaN(parseInt(timestamp))) {
+        return parseInt(timestamp);
+      }
     }
-  });
+
+    // 2. 遍历所有可能包含时间信息的元素
+    const timeElements = emailRow.querySelectorAll('td[role="gridcell"] *');
+    for (const element of timeElements) {
+      // 检查datetime属性
+      const datetime = element.getAttribute('datetime');
+      if (datetime) {
+        const timestamp = new Date(datetime).getTime();
+        if (!isNaN(timestamp)) {
+          return timestamp;
+        }
+      }
+
+      // 检查title属性
+      const title = element.getAttribute('title');
+      if (title) {
+        const timestamp = new Date(title).getTime();
+        if (!isNaN(timestamp)) {
+          return timestamp;
+        }
+      }
+
+      // 检查aria-label属性
+      const ariaLabel = element.getAttribute('aria-label');
+      if (ariaLabel) {
+        const timestamp = new Date(ariaLabel).getTime();
+        if (!isNaN(timestamp)) {
+          return timestamp;
+        }
+      }
+    }
+
+    // 3. 尝试从邮件的DOM结构中提取时间信息
+    const emailData = {
+      subject: emailRow.querySelector('td[role="gridcell"] span[email]')?.getAttribute('email'),
+      headers: emailRow.querySelector('td[role="gridcell"] div[data-legacy-last-message-id]')?.getAttribute('data-legacy-last-message-id'),
+      messageId: emailRow.getAttribute('data-legacy-message-id') || emailRow.getAttribute('data-message-id')
+    };
+
+    // 从邮件ID中提取时间信息（Gmail的邮件ID通常包含时间信息）
+    if (emailData.messageId) {
+      const idParts = emailData.messageId.split('-');
+      const possibleTimestamp = idParts[idParts.length - 1];
+      if (possibleTimestamp && !isNaN(parseInt(possibleTimestamp))) {
+        return parseInt(possibleTimestamp);
+      }
+    }
+
+    // 4. 如果上述方法都失败，使用邮件在列表中的原始位置作为排序依据
+    const allRows = Array.from(emailRow.parentElement.children);
+    const originalIndex = allRows.indexOf(emailRow);
+    // 使用一个足够大的数来确保顺序正确（越靠前的邮件时间戳越大）
+    return Date.now() - (originalIndex * 1000);
+
+  } catch (error) {
+    console.error('Error getting email timestamp:', error);
+    // 发生错误时返回当前时间，确保不会影响其他邮件的排序
+    return Date.now();
+  }
+}
+
+// 新增：解析Gmail时间文本的函数
+function parseGmailTimeText(text) {
+  const now = new Date();
+  const timeText = text.trim();
+  
+  // 如果是ISO格式的日期时间，直接返回
+  const isoTimestamp = Date.parse(timeText);
+  if (!isNaN(isoTimestamp)) {
+    return isoTimestamp;
+  }
+
+  // 通用时间模式匹配（支持24小时制和12小时制）
+  const timePattern = /(\d{1,2}):(\d{2})/;
+  const timeMatch = timeText.match(timePattern);
+  if (timeMatch) {
+    const time = new Date();
+    let [hours, minutes] = timeMatch.slice(1).map(Number);
+    
+    // 处理AM/PM格式（支持多语言）
+    const isAM = /AM|上午|早上|오전|午前/i.test(timeText);
+    const isPM = /PM|下午|晚上|오후|午後/i.test(timeText);
+    
+    if (isPM && hours < 12) hours += 12;
+    if (isAM && hours === 12) hours = 0;
+    
+    time.setHours(hours, minutes);
+    return time.getTime();
+  }
+
+  // 处理日期格式
+  // 匹配常见的日期模式：MM/DD, DD/MM, MM月DD日, DD-MM, etc.
+  const datePattern = /(\d{1,2})[\/\-月\.日\s]+(\d{1,2})/;
+  const dateMatch = timeText.match(datePattern);
+  if (dateMatch) {
+    let [_, num1, num2] = dateMatch;
+    [num1, num2] = [num1, num2].map(Number);
+    
+    // 根据地区设置判断月份和日期的顺序
+    const userLang = navigator.language || navigator.userLanguage;
+    const isMonthFirst = /^en-US|ja|ko/.test(userLang);
+    
+    const month = isMonthFirst ? num1 - 1 : num2 - 1;
+    const day = isMonthFirst ? num2 : num1;
+    
+    const date = new Date(now.getFullYear(), month, day);
+    
+    // 如果日期超前于现在，可能是去年的日期
+    if (date > now) {
+      date.setFullYear(date.getFullYear() - 1);
+    }
+    
+    return date.getTime();
+  }
+
+  // 处理相对时间表达
+  const relativeTimePatterns = {
+    // 添加多语言支持的相对时间匹配
+    minutes: /(\d+)\s*(minutes?|分钟|分|분)/i,
+    hours: /(\d+)\s*(hours?|小时|時間|시간)/i,
+    days: /(\d+)\s*(days?|天|日|일)/i,
+    weeks: /(\d+)\s*(weeks?|周|週間|주)/i,
+    months: /(\d+)\s*(months?|个月|ヶ月|개월)/i
+  };
+
+  for (const [unit, pattern] of Object.entries(relativeTimePatterns)) {
+    const match = timeText.match(pattern);
+    if (match) {
+      const value = parseInt(match[1]);
+      const time = new Date();
+      switch(unit) {
+        case 'minutes': time.setMinutes(time.getMinutes() - value); break;
+        case 'hours': time.setHours(time.getHours() - value); break;
+        case 'days': time.setDate(time.getDate() - value); break;
+        case 'weeks': time.setDate(time.getDate() - (value * 7)); break;
+        case 'months': time.setMonth(time.getMonth() - value); break;
+      }
+      return time.getTime();
+    }
+  }
+
+  // 如果无法解析，返回当前时间
+  console.warn('Unable to parse time text:', timeText);
+  return now.getTime();
 }
 
 // 修改切换置顶状态的函数
@@ -200,26 +374,20 @@ function triggerGmailRefresh() {
                        document.querySelector('div[aria-label="Refresh"]') ||
                        document.querySelector('div[jsaction*="refresh"]');
   
-  if (refreshButton) {  // 修复条件判断
+  if (refreshButton) {
     refreshButton.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
     refreshButton.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
     refreshButton.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    return;
+  }
+
+  // 如果找不到刷新按钮，尝试通过URL参数刷新
+  const currentUrl = window.location.href;
+  if (currentUrl.includes('?')) {
+    // 如果URL已经有参数，添加一个时间戳
+    window.location.href = currentUrl + '&refresh=' + Date.now();
   } else {
-    const mailList = document.querySelector('.AO');
-    if (mailList) {
-      mailList.style.opacity = '0.5';
-      setTimeout(() => {
-        mailList.style.opacity = '1';
-        document.dispatchEvent(new KeyboardEvent('keydown', {
-          key: 'u',
-          code: 'KeyU',
-          keyCode: 85,
-          which: 85,
-          bubbles: true,
-          cancelable: true
-        }));
-      }, 100);
-    }
+    window.location.href = currentUrl + '?refresh=' + Date.now();
   }
 }
 
