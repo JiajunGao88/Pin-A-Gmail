@@ -342,24 +342,25 @@ async function togglePin(emailRow) {
       // 取消置顶
       pinnedEmails.delete(emailId);
       
-      // 添加过渡动画类
-      emailRow.style.transition = 'transform 0.3s ease, opacity 0.3s ease';
-      emailRow.style.opacity = '0.5';
-      
       // 保存状态
       await chrome.storage.sync.set({
         pinnedEmails: Array.from(pinnedEmails)
       });
 
-      // 找到这封邮件应该在的位置
+      // 找到这封邮件应该在的位置并直接移动
       const targetPosition = findEmailTargetPosition(emailRow);
+      const emailContainer = document.querySelector('table[role="grid"] tbody');
+      const allRows = Array.from(emailContainer.querySelectorAll('tr.zA'));
       
-      // 平滑移动到目标位置
-      await smoothMoveEmail(emailRow, targetPosition);
+      // 直接移动到目标位置
+      if (targetPosition >= allRows.length) {
+        emailContainer.appendChild(emailRow);
+      } else {
+        emailContainer.insertBefore(emailRow, allRows[targetPosition]);
+      }
       
       // 移除置顶样式
       emailRow.classList.remove('pinned-email');
-      emailRow.style.opacity = '1';
       
     } else {
       // 添加置顶
@@ -371,7 +372,7 @@ async function togglePin(emailRow) {
         pinnedEmails: Array.from(pinnedEmails)
       });
       
-      // 重新排序（只影响置顶区域）
+      // 重新排序置顶区域
       reorderPinnedEmails();
     }
   } catch (error) {
@@ -379,7 +380,7 @@ async function togglePin(emailRow) {
   }
 }
 
-// 新增：找到邮件应该在的位置
+// 找到邮件应该在的位置
 function findEmailTargetPosition(emailRow) {
   const emailContainer = document.querySelector('table[role="grid"] tbody');
   const allRows = Array.from(emailContainer.querySelectorAll('tr.zA'));
@@ -400,65 +401,6 @@ function findEmailTargetPosition(emailRow) {
   
   return allRows.length;
 }
-
-// 新增：平滑移动邮件到目标位置
-async function smoothMoveEmail(emailRow, targetPosition) {
-  const emailContainer = document.querySelector('table[role="grid"] tbody');
-  const allRows = Array.from(emailContainer.querySelectorAll('tr.zA'));
-  
-  // 计算当前位置和目标位置的距离
-  const currentIndex = allRows.indexOf(emailRow);
-  const distance = targetPosition - currentIndex;
-  
-  if (distance === 0) return;
-  
-  // 获取每行的高度
-  const rowHeight = emailRow.offsetHeight;
-  
-  // 设置动画起始状态
-  emailRow.style.position = 'relative';
-  emailRow.style.zIndex = '1000';
-  emailRow.style.transform = 'translateY(0)';
-  
-  // 创建动画Promise
-  return new Promise(resolve => {
-    // 添加动画
-    emailRow.style.transform = `translateY(${distance * rowHeight}px)`;
-    
-    // 动画结束后
-    emailRow.addEventListener('transitionend', function handler() {
-      // 移除动画相关样式
-      emailRow.style.position = '';
-      emailRow.style.zIndex = '';
-      emailRow.style.transform = '';
-      
-      // 实际移动DOM位置
-      if (targetPosition >= allRows.length) {
-        emailContainer.appendChild(emailRow);
-      } else {
-        emailContainer.insertBefore(emailRow, allRows[targetPosition]);
-      }
-      
-      emailRow.removeEventListener('transitionend', handler);
-      resolve();
-    });
-  });
-}
-
-// 更新CSS样式
-const style = document.createElement('style');
-style.textContent = `
-  tr.zA {
-    transition: transform 0.3s ease, opacity 0.3s ease !important;
-  }
-  
-  .pinned-email {
-    position: relative;
-    z-index: 1;
-    transition: transform 0.3s ease, opacity 0.3s ease !important;
-  }
-`;
-document.head.appendChild(style);
 
 // 添加新的函数来处理 Gmail 刷新
 function triggerGmailRefresh() {
